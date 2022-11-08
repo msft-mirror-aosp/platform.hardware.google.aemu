@@ -111,8 +111,6 @@ class MetricsLogger {
    public:
     // Log a MetricEventType.
     virtual void logMetricEvent(MetricEventType eventType) = 0;
-    // Set a crash annotation.
-    virtual void setCrashAnnotation(const char* key, const char* value) = 0;
     // Virtual destructor.
     virtual ~MetricsLogger() = default;
 
