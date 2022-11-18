@@ -66,8 +66,10 @@ if (BUILD_STANDALONE)
         set(aemu-base-platform-deps Shlwapi)
     elseif (QNX)
         set(aemu-base-platform-deps dl)
-    else()
+    elseif(LINUX)
         set(aemu-base-platform-deps dl rt)
+    elseif(APPLE)
+        set(aemu-base-platform-deps "-framework Foundation" "-framework AppKit" "-framework IOKit")
     endif()
 
     target_link_libraries(
@@ -100,18 +102,18 @@ else()
     set(aemu-base-platform-test-srcs "")
 endif()
 
-# Tests
-add_library(
-    aemu-base-testing-support
-    testing/file_io.cpp)
-target_link_libraries(
-    aemu-base-testing-support
-    PRIVATE
-    aemu-base.headers
-    gtest
-    gmock)
-
 if (ENABLE_VKCEREAL_TESTS)
+    # Tests
+    add_library(
+        aemu-base-testing-support
+        testing/file_io.cpp)
+    target_link_libraries(
+        aemu-base-testing-support
+        PRIVATE
+        aemu-base.headers
+        gtest
+        gmock)
+
     if (NOT DEFINED aemu-base-test-srcs)
         set(aemu-base-test-srcs
             AlignedBuf_unittest.cpp
