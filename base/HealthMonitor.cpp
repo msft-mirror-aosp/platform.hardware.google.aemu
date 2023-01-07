@@ -40,11 +40,8 @@ template <class... Ts>
 MonitoredEventVisitor(Ts...) -> MonitoredEventVisitor<Ts...>;
 
 template <class Clock>
-HealthMonitor<Clock>::HealthMonitor(MetricsLogger& metricsLogger, uint64_t heartbeatInterval,
-                                    size_t maxEventsPerInverval)
-    : mInterval(Duration(std::chrono::milliseconds(heartbeatInterval))),
-      mLogger(metricsLogger),
-      mMaxEventsPerInterval(maxEventsPerInverval) {
+HealthMonitor<Clock>::HealthMonitor(MetricsLogger& metricsLogger, uint64_t heartbeatInterval)
+    : mInterval(Duration(std::chrono::milliseconds(heartbeatInterval))), mLogger(metricsLogger) {
     start();
 }
 
@@ -73,18 +70,14 @@ typename HealthMonitor<Clock>::Id HealthMonitor<Clock>::startMonitoringTask(
 
     AutoLock lock(mLock);
     auto id = mNextId++;
-    if (mEventQueue.size() < mMaxEventsPerInterval) {
-        auto event = std::make_unique<MonitoredEvent>(typename MonitoredEventType::Start{
-            .id = id,
-            .metadata = std::move(metadata),
-            .timeOccurred = Clock::now(),
-            .onHangAnnotationsCallback = std::move(onHangAnnotationsCallback),
-            .timeoutThreshold = Duration(std::chrono::milliseconds(timeout)),
-            .parentId = parentId});
-        mEventQueue.push(std::move(event));
-    } else {
-        mDroppedEvents++;
-    }
+    auto event = std::make_unique<MonitoredEvent>(typename MonitoredEventType::Start{
+        .id = id,
+        .metadata = std::move(metadata),
+        .timeOccurred = Clock::now(),
+        .onHangAnnotationsCallback = std::move(onHangAnnotationsCallback),
+        .timeoutThreshold = Duration(std::chrono::milliseconds(timeout)),
+        .parentId = parentId});
+    mEventQueue.push(std::move(event));
     return id;
 }
 
@@ -93,11 +86,7 @@ void HealthMonitor<Clock>::touchMonitoredTask(Id id) {
     auto event = std::make_unique<MonitoredEvent>(
         typename MonitoredEventType::Touch{.id = id, .timeOccurred = Clock::now()});
     AutoLock lock(mLock);
-    if (mEventQueue.size() < mMaxEventsPerInterval) {
-        mEventQueue.push(std::move(event));
-    } else {
-        mDroppedEvents++;
-    }
+    mEventQueue.push(std::move(event));
 }
 
 template <class Clock>
@@ -105,11 +94,7 @@ void HealthMonitor<Clock>::stopMonitoringTask(Id id) {
     auto event = std::make_unique<MonitoredEvent>(
         typename MonitoredEventType::Stop{.id = id, .timeOccurred = Clock::now()});
     AutoLock lock(mLock);
-    if (mEventQueue.size() < mMaxEventsPerInterval) {
-        mEventQueue.push(std::move(event));
-    } else {
-        mDroppedEvents++;
-    }
+    mEventQueue.push(std::move(event));
 }
 
 template <class Clock>
@@ -129,19 +114,11 @@ template <class Clock>
 intptr_t HealthMonitor<Clock>::main() {
     bool keepMonitoring = true;
     std::queue<std::unique_ptr<MonitoredEvent>> events;
-    struct Watermarks {
-        Duration timedWaitDuration =
-            Duration(std::chrono::milliseconds(kDefaultWaitTimeWatermarkMs));
-        Duration loopExecutionDuration =
-            Duration(std::chrono::milliseconds(kDefaultEventsProcessWatermarkMs));
-        size_t eventsProcessed = kDefaultEventQueueWatermark;
-        size_t tasksMonitored = kDefaultTasksMonitoredWatermark;
-    } watermarks;
 
     while (keepMonitoring) {
         std::vector<std::promise<void>> pollPromises;
         std::unordered_set<Id> tasksToRemove;
-        Timestamp beforeWait = Clock::now();
+        int newHungTasks = mHungTasks;
         {
             AutoLock lock(mLock);
             if (mEventQueue.empty()) {
@@ -151,24 +128,9 @@ intptr_t HealthMonitor<Clock>::main() {
                         std::chrono::duration_cast<std::chrono::microseconds>(mInterval).count());
             }
             mEventQueue.swap(events);
-            if (mDroppedEvents > 0) {
-                WARN("%d events were dropped in the last interval. Results might be inaccurate.",
-                     mDroppedEvents);
-                mDroppedEvents = 0;
-            }
-        }
-        if (events.size() > watermarks.eventsProcessed) {
-            INFO("HealthMonitor watermark for number of events increased to %d", events.size());
-            watermarks.eventsProcessed = events.size();
         }
 
-        Timestamp heartbeat = Clock::now();
-        Duration timedWaitDuration = heartbeat - beforeWait;
-        if (timedWaitDuration > watermarks.timedWaitDuration) {
-            INFO("HealthMonitor watermark for thread sleep time increased to %d ms",
-                 std::chrono::duration_cast<std::chrono::milliseconds>(timedWaitDuration).count());
-            watermarks.timedWaitDuration = timedWaitDuration;
-        }
+        Timestamp now = Clock::now();
         while (!events.empty()) {
             auto event(std::move(events.front()));
             events.pop();
@@ -230,7 +192,7 @@ intptr_t HealthMonitor<Clock>::main() {
                                updateTaskParent(events, task, event.timeOccurred);
 
                                // Mark it for deletion, but retain it until the end of
-                               // the health check to check concurrent tasks hung
+                               // the health check concurrent tasks hung
                                tasksToRemove.insert(event.id);
                            },
                            [&keepMonitoring](typename MonitoredEventType::EndMonitoring& event) {
@@ -242,8 +204,6 @@ intptr_t HealthMonitor<Clock>::main() {
                        *event);
         }
 
-        int newHungTasks = mHungTasks;
-
         // Sort by what times out first. Identical timestamps are possible
         std::multimap<Timestamp, uint64_t> sortedTasks;
         for (auto& [_, task] : mMonitoredTasks) {
@@ -252,9 +212,8 @@ intptr_t HealthMonitor<Clock>::main() {
 
         for (auto& [_, task_id] : sortedTasks) {
             auto& task = mMonitoredTasks[task_id];
-            if (task.timeoutTimestamp < heartbeat &&
-                tasksToRemove.find(task_id) == tasksToRemove.end()) {
-                // Newly hung task which is still in progress
+            if (task.timeoutTimestamp < now) {
+                // Newly hung task
                 if (!task.hungTimestamp.has_value()) {
                     // Copy over additional annotations captured at hangTime
                     if (task.onHangAnnotationsCallback) {
@@ -268,7 +227,7 @@ intptr_t HealthMonitor<Clock>::main() {
                     newHungTasks++;
                 }
             } else {
-                // Task resumes or ends
+                // Task resumes
                 if (task.hungTimestamp.has_value()) {
                     newHungTasks--;
                     auto hangTime = duration_cast<std::chrono::milliseconds>(
@@ -282,7 +241,6 @@ intptr_t HealthMonitor<Clock>::main() {
                     task.hungTimestamp = std::nullopt;
                 }
             }
-
             if (tasksToRemove.find(task_id) != tasksToRemove.end()) {
                 mMonitoredTasks.erase(task_id);
             }
@@ -290,24 +248,12 @@ intptr_t HealthMonitor<Clock>::main() {
 
         if (mHungTasks != newHungTasks) {
             ERR("HealthMonitor: Number of unresponsive tasks %s: %d -> %d",
-                mHungTasks < newHungTasks ? "increased" : "decreased", mHungTasks, newHungTasks);
+                mHungTasks < newHungTasks ? "increased" : "decreaased", mHungTasks, newHungTasks);
             mHungTasks = newHungTasks;
         }
 
         for (auto& complete : pollPromises) {
             complete.set_value();
-        }
-
-        auto loopExecutionDuration = Clock::now() - heartbeat;
-        if (loopExecutionDuration > watermarks.loopExecutionDuration) {
-            INFO("HealthMonitor watermark for main loop execution increased to %d ms",
-                 duration_cast<std::chrono::milliseconds>(loopExecutionDuration).count());
-            watermarks.loopExecutionDuration = loopExecutionDuration;
-        }
-        if (mMonitoredTasks.size() > watermarks.tasksMonitored) {
-            INFO("HealthMonitor watermark for number of tasks monitored increased to %d",
-                 mMonitoredTasks.size());
-            watermarks.tasksMonitored = mMonitoredTasks.size();
         }
     }
 
