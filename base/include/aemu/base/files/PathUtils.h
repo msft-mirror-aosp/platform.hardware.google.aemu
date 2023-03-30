@@ -206,7 +206,6 @@ public:
     //  "file" -> ""
     //  "file." -> "."
     //  "/full/path.png" -> ".png"
-    static std::string_view extension(const char* path, HostType hostType = HOST_TYPE);
     static std::string_view extension(const std::string& path,
                                       HostType hostType = HOST_TYPE);
     // Split |path| into a directory name and a file name. |dirName| and
