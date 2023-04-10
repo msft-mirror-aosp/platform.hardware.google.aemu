@@ -11,34 +11,26 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 #pragma once
 
-#ifdef __cplusplus
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <cstdint>
+
 extern "C" {
-#endif
+struct media_vtb_utils_copy_context {
+    media_vtb_utils_copy_context(void* surface, unsigned int w, unsigned int h)
+        : iosurface(surface), dest_width(w), dest_height(h){};
+    void* iosurface;
+    unsigned int dest_width;
+    unsigned int dest_height;
+};
 
-#define LOG_SEVERITY
-// Defines the available log severities.
-typedef enum LogSeverity {
-    EMULATOR_LOG_VERBOSE = -2,
-    EMULATOR_LOG_DEBUG = -1,
-    EMULATOR_LOG_INFO = 0,
-    EMULATOR_LOG_WARNING = 1,
-    EMULATOR_LOG_ERROR = 2,
-    EMULATOR_LOG_FATAL = 3,
-    EMULATOR_LOG_NUM_SEVERITIES,
+void media_vtb_utils_nv12_updater(void* privData,
+                                  uint32_t type,
+                                  uint32_t* textures,
+                                  void* callerData);
 
-// DFATAL will be ERROR in release builds, and FATAL in debug ones.
-#ifdef NDEBUG
-    EMULATOR_LOG_DFATAL = EMULATOR_LOG_ERROR,
-#else
-    EMULATOR_LOG_DFATAL = EMULATOR_LOG_FATAL,
-#endif
-} LogSeverity;
-
-extern LogSeverity android_log_severity;
-
-#ifdef __cplusplus
-}
-#endif
-
+}  // end of extern C
